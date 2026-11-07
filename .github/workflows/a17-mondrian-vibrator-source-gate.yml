@@ -1,0 +1,21 @@
+name: AOSP17 mondrian Vibrator AIDL V2 source and offload safety
+on:
+  push:
+    branches:
+      - port/a17-mondrian-vibrator-aidl-offload-safety-20261108
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vibrator-source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native C++ Glink, ASan patterns and product GNU Make regression
+        run: python3 tests/check_android17_vibrator_offload.py
+      - name: Scope
+        run: |
+          echo "SOURCE/HOST ONLY. Android17 Soong AIDL V2/V4, vendor ABI, device haptics not tested."
+          echo "No VINTF/FCM/SELinux, Xiaomi kernel FF, effects, amplitude, CTS/VTS or mondrian runtime."
