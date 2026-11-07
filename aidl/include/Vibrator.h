@@ -80,7 +80,7 @@ public:
     int GlinkWrite(uint8_t *buf, size_t buflen);
 private:
     std::string dev_name;
-    int fd;
+    int fd = -1;  // No channel exists before GlinkOpen succeeds.
 };
 
 class PatternOffload {
