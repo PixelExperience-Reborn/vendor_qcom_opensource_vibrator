@@ -1,3 +1,8 @@
+# This archived service exposes Vibrator AIDL V2 with Qualcomm EV_FF/AON
+# assumptions. Do not select it for independent AOSP17 mondrian until the
+# Xiaomi haptics input driver, effects, single HAL provider and VINTF pass.
+# Preserve historical behavior for other devices.
+ifneq ($(TARGET_DEVICE),mondrian)
 QTI_VIBRATOR_HAL_SERVICE := vendor.qti.hardware.vibrator.service
 PRODUCT_PACKAGES += $(QTI_VIBRATOR_HAL_SERVICE)
 
@@ -17,3 +22,5 @@ endif
 ifeq ($(PLATFORM_VERSION), $(filter $(PLATFORM_VERSION),U 14))
   $(call soong_config_set, vibrator, vibratortargets, vibratoraidlV2target)
 endif
+
+endif # TARGET_DEVICE != mondrian

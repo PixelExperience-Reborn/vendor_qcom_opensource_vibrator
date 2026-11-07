@@ -28,6 +28,7 @@
  */
 
 #include <string.h>
+#include <new>
 #include <errno.h>
 
 #include "VibratorPatterns.h"
@@ -496,7 +497,7 @@ int get_pattern_data(uint8_t **ptr, uint32_t *size)
                                sizeof(effect_6), sizeof(effect_7),
                                sizeof(effect_8), sizeof(effect_9)};
 
-    pattern_data = new uint8_t[LEN_TOTAL_PATTERNS];
+    pattern_data = new (std::nothrow) uint8_t[LEN_TOTAL_PATTERNS];
     if (!pattern_data) {
         *ptr = NULL;
         return -ENOMEM;
@@ -516,5 +517,5 @@ int get_pattern_data(uint8_t **ptr, uint32_t *size)
 
 void free_pattern_mem(uint8_t *ptr)
 {
-    delete ptr;
+    delete[] ptr;
 }

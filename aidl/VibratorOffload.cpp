@@ -84,7 +84,6 @@ void PatternOffload::SSREventListener(void)
 {
     int device_fd, n, ssr_event = 0;
     char msg[UEVENT_MSG_LEN + 2];
-    char *msg_ptr = msg;
 
     /* Offload during the bootup */
     SendPatterns();
@@ -104,6 +103,8 @@ void PatternOffload::SSREventListener(void)
          msg[n] = '\0';
          msg[n+1] = '\0';
          if (strstr(msg, "slate_com_dev")) {
+             // Each message has a new NUL-separated kernel uevent payload.
+             char *msg_ptr = msg;
              while(*msg_ptr) {
                  if(!strncmp(msg_ptr, SLATE_EVENT, SLATE_EVENT_STRING_LEN)) {
                      msg_ptr += SLATE_EVENT_STRING_LEN;
@@ -119,6 +120,7 @@ void PatternOffload::SSREventListener(void)
              }
          }
      }
+    ::close(device_fd);
 }
 
 /** Offload patterns
@@ -132,35 +134,37 @@ void PatternOffload::SSREventListener(void)
  */
 void PatternOffload::SendPatterns()
 {
-    uint8_t *data;
-    uint32_t len;
-    int32_t rc;
+    uint8_t *config = nullptr;
+    uint8_t *pattern = nullptr;
+    uint32_t config_len = 0;
+    uint32_t pattern_len = 0;
 
-    rc = initChannel();
+    int rc = initChannel();
     if (rc < 0)
         return;
 
-    rc = get_pattern_config(&data, &len);
-    if (rc < 0 || !data)
-        return;
+    // Config is static; the pattern buffer is allocated with new[].
+    rc = get_pattern_config(&config, &config_len);
+    if (rc >= 0 && config && config_len)
+        rc = sendData(config, config_len);
+    else if (rc >= 0)
+        rc = -EINVAL;
 
-    /* Send config data */
-    rc = sendData(data, len);
-    if (rc < 0)
-        return;
+    if (rc >= 0) {
+        rc = get_pattern_data(&pattern, &pattern_len);
+        if (rc >= 0 && pattern && pattern_len)
+            rc = sendData(pattern, pattern_len);
+        else if (rc >= 0)
+            rc = -EINVAL;
+    }
 
-    rc = get_pattern_data(&data, &len);
-    if (rc < 0)
-        return;
+    free_pattern_mem(pattern);
+    GlinkCh.GlinkClose();
 
-    /* Send pattern data */
-    rc = sendData(data, len);
     if (rc < 0)
-        ALOGE("pattern offloaded failed\n");
+        ALOGE("Pattern offload failed: %d", rc);
     else
-        ALOGI("Patterns offloaded successfully\n");
-
-    free_pattern_mem(data);
+        ALOGI("Patterns offloaded successfully");
 }
 
 int PatternOffload::sendData(uint8_t *data, int len)
@@ -207,26 +211,27 @@ int PatternOffload::initChannel()
 #define GLINK_MAX_CONN_RETRIES    60
 int OffloadGlinkConnection::GlinkOpen(std::string& dev)
 {
-    int tries = GLINK_MAX_CONN_RETRIES;
+    GlinkClose();
     dev_name = dev;
 
-    do {
+    for (int attempt = 0; attempt < GLINK_MAX_CONN_RETRIES; ++attempt) {
         fd = ::open(dev_name.c_str(), O_RDWR);
-        tries--;
-        if (fd < 0)
-        {
-            ALOGE("%s: %s: open error(%s)", __func__, dev.c_str(), strerror(errno));
-            sleep(1);
-        }
-    } while(-ETIMEDOUT == errno && tries > 0 );
+        if (fd >= 0)
+            return fd;
 
-    return fd;
+        const int error = errno;
+        ALOGE("%s: %s: open error(%s)", __func__, dev.c_str(), strerror(error));
+        // errno is positive; do not sleep for non-retriable errors.
+        if (error != ETIMEDOUT || attempt + 1 == GLINK_MAX_CONN_RETRIES)
+            return -error;
+        sleep(1);
+    }
+    return -ETIMEDOUT;
 }
 
 int OffloadGlinkConnection::GlinkClose()
 {
-    if (fd >= 0)
-    {
+    if (fd >= 0) {
         ::close(fd);
         fd = -1;
     }
@@ -235,84 +240,75 @@ int OffloadGlinkConnection::GlinkClose()
 
 int OffloadGlinkConnection::GlinkPoll()
 {
-    ssize_t rc = 0;
-    struct pollfd poll_fd;
+    if (fd < 0)
+        return -EBADF;
 
-    // wait for Rx data available in fd, for 2 seconds timeout
-    poll_fd.fd = fd;
-    poll_fd.events = POLLIN;
+    struct pollfd poll_fd = {fd, POLLIN, 0};
+    int rc;
+    do {
+        rc = ::poll(&poll_fd, 1, 2000);
+    } while (rc < 0 && errno == EINTR);
 
-    rc = ::poll(&poll_fd, 1, 2000);
-
-    if(rc > 0)
-    {
-        if (poll_fd.revents & POLLIN)
-            return 0;
-    } else if (rc == 0) {
-           ALOGE("Glink poll timeout");
-    } else {
-           ALOGE("Glink poll error: %s\n", strerror(errno));
-    }
-
-    return -1;
+    if (rc == 0)
+        return -ETIMEDOUT;
+    if (rc < 0)
+        return -errno;
+    if (poll_fd.revents & POLLIN)
+        return 0;
+    if (poll_fd.revents & POLLNVAL)
+        return -EBADF;
+    return -EPIPE;
 }
 
 int OffloadGlinkConnection::GlinkRead(uint8_t *data, size_t size)
 {
-    int rc = 0;
-    size_t bytes_read = 0;
-
     if (fd < 0)
-        return -1;
+        return -EBADF;
+    if (!data || size == 0)
+        return -EINVAL;
 
-    if (0 != GlinkPoll())
-        return -1;
+    size_t bytes_read = 0;
+    while (bytes_read < size) {
+        const int ready = GlinkPoll();
+        if (ready < 0)
+            return ready;
 
-    while (bytes_read < size)
-    {
-        rc = ::read(fd, data+bytes_read, size-bytes_read);
+        ssize_t rc;
+        do {
+            rc = ::read(fd, data + bytes_read, size - bytes_read);
+        } while (rc < 0 && errno == EINTR);
         if (rc < 0) {
-            if (errno != EAGAIN) {
-                ALOGE("%s: Read error: %s, rc %d", __func__,
-                                strerror(errno), rc);
-                goto read_error;
-            }
-        } else if (rc == 0) {
-            ALOGE("%s: Zero length packet received or hardware connection went off",
-                    __func__);
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            return -errno;
         }
-        bytes_read += rc;
+        if (rc == 0)
+            return -EPIPE;
+        bytes_read += static_cast<size_t>(rc);
     }
     return 0;
-
-read_error:
-    return -1;
 }
 
 int OffloadGlinkConnection::GlinkWrite(uint8_t *buf, size_t buflen)
 {
-    size_t bytes_written_out = 0;
-    int rc = 0;
-
     if (fd < 0)
-        return -1;
+        return -EBADF;
+    if (!buf || buflen == 0)
+        return -EINVAL;
 
-    if (!buflen) {
-       ALOGE("%s: Invalid buffer len", __func__);
-       return 0;
-    }
-
+    size_t bytes_written_out = 0;
     while (bytes_written_out < buflen) {
-        rc = ::write (fd, buf+bytes_written_out, buflen-bytes_written_out);
-        if (rc < 0) {
-            ALOGE("%s: Write returned failure %d", __func__, rc);
-            return errno;
-        }
-        bytes_written_out += rc;
+        ssize_t rc;
+        do {
+            rc = ::write(fd, buf + bytes_written_out, buflen - bytes_written_out);
+        } while (rc < 0 && errno == EINTR);
+        if (rc < 0)
+            return -errno;  // sendData() requires negative errors.
+        if (rc == 0)
+            return -EIO;
+        bytes_written_out += static_cast<size_t>(rc);
     }
-    rc = 0;
-
-    return rc;
+    return 0;
 }
 
 }  // namespace vibrator

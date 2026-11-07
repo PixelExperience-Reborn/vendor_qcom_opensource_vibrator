@@ -30,6 +30,7 @@
 #ifndef  VIBRATOR_PATTERNS_H
 #define  VIBRATOR_PATTERNS_H
 
+#include <stdint.h>
 #include <sys/types.h>
 
 struct effect {

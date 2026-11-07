@@ -1,0 +1,31 @@
+name: AOSP17 mondrian Vibrator AIDL V2 source and offload safety
+on:
+  push:
+    branches:
+      - port/a17-mondrian-vibrator-aidl-offload-safety-20261108
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vibrator-source-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native C++ Glink, ASan patterns and product GNU Make regression
+        run: python3 tests/check_android17_vibrator_offload.py
+      - name: Verify pinned PE-Reborn Android17 manifest and 135-project inventory
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch port/a17-aosp17-manifest-20261102 \
+            https://github.com/PixelExperience-Reborn/manifest.git "$RUNNER_TEMP/pe-a17-manifest"
+          cd "$RUNNER_TEMP/pe-a17-manifest"
+          test "$(git rev-parse HEAD)" = "ee362a1b7897745e38b1766146bf31dbf4b60778"
+          python3 tools/validate_aosp17_base_profiles.py
+          python3 -m unittest discover -s tools -p test_aosp17_manifest_entrypoint.py -v
+          python3 tools/validate_135_repository_matrix.py
+      - name: Scope
+        run: |
+          echo "SOURCE/HOST ONLY. Android17 Soong AIDL V2/V4, vendor ABI, device haptics not tested."
+          echo "No VINTF/FCM/SELinux, Xiaomi kernel FF, effects, amplitude, CTS/VTS or mondrian runtime."
