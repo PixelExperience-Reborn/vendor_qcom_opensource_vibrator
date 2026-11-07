@@ -84,7 +84,6 @@ void PatternOffload::SSREventListener(void)
 {
     int device_fd, n, ssr_event = 0;
     char msg[UEVENT_MSG_LEN + 2];
-    char *msg_ptr = msg;
 
     /* Offload during the bootup */
     SendPatterns();
@@ -104,6 +103,8 @@ void PatternOffload::SSREventListener(void)
          msg[n] = '\0';
          msg[n+1] = '\0';
          if (strstr(msg, "slate_com_dev")) {
+             // Each message has a new NUL-separated kernel uevent payload.
+             char *msg_ptr = msg;
              while(*msg_ptr) {
                  if(!strncmp(msg_ptr, SLATE_EVENT, SLATE_EVENT_STRING_LEN)) {
                      msg_ptr += SLATE_EVENT_STRING_LEN;
@@ -119,6 +120,7 @@ void PatternOffload::SSREventListener(void)
              }
          }
      }
+    ::close(device_fd);
 }
 
 /** Offload patterns
@@ -132,35 +134,37 @@ void PatternOffload::SSREventListener(void)
  */
 void PatternOffload::SendPatterns()
 {
-    uint8_t *data;
-    uint32_t len;
-    int32_t rc;
+    uint8_t *config = nullptr;
+    uint8_t *pattern = nullptr;
+    uint32_t config_len = 0;
+    uint32_t pattern_len = 0;
 
-    rc = initChannel();
+    int rc = initChannel();
     if (rc < 0)
         return;
 
-    rc = get_pattern_config(&data, &len);
-    if (rc < 0 || !data)
-        return;
+    // Config is static; the pattern buffer is allocated with new[].
+    rc = get_pattern_config(&config, &config_len);
+    if (rc >= 0 && config && config_len)
+        rc = sendData(config, config_len);
+    else if (rc >= 0)
+        rc = -EINVAL;
 
-    /* Send config data */
-    rc = sendData(data, len);
-    if (rc < 0)
-        return;
+    if (rc >= 0) {
+        rc = get_pattern_data(&pattern, &pattern_len);
+        if (rc >= 0 && pattern && pattern_len)
+            rc = sendData(pattern, pattern_len);
+        else if (rc >= 0)
+            rc = -EINVAL;
+    }
 
-    rc = get_pattern_data(&data, &len);
-    if (rc < 0)
-        return;
+    free_pattern_mem(pattern);
+    GlinkCh.GlinkClose();
 
-    /* Send pattern data */
-    rc = sendData(data, len);
     if (rc < 0)
-        ALOGE("pattern offloaded failed\n");
+        ALOGE("Pattern offload failed: %d", rc);
     else
-        ALOGI("Patterns offloaded successfully\n");
-
-    free_pattern_mem(data);
+        ALOGI("Patterns offloaded successfully");
 }
 
 int PatternOffload::sendData(uint8_t *data, int len)
